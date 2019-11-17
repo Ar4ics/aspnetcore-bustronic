@@ -8,6 +8,7 @@ using AspNetCoreBustronic.Controllers;
 using AspNetCoreBustronic.Core;
 using AspNetCoreBustronic.Models;
 using CSharpFunctionalExtensions;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -41,29 +42,19 @@ namespace AspNetCoreBustronic.Services
             using (var scope = _provider.CreateScope())
             {
                 var context = scope.ServiceProvider.GetRequiredService<BustronicContext>();
-
                 var movingData = MovingData.Create(context);
+                var movingVehicleInfos = MovingVehicleInfo.Create(movingData);
                 var computation = new Computation(movingData);
 
                 while (!stoppingToken.IsCancellationRequested)
                 {
                     _logger.LogInformation("Worker running at: {time}", DateTimeOffset.Now);
                     var sw = Stopwatch.StartNew();
-                    var result = computation.compute(movingData.movingVehicles);
+                    movingVehicleInfos = computation.compute(movingVehicleInfos);
                     sw.Stop();
-                    if (result.IsSuccess)
-                    {
-                        movingData.movingVehicles = result.Value;
-                        _logger.LogInformation($"count = {result.Value.Count}, elapsed = {sw.ElapsedMilliseconds}");
-                    }
-                    else
-                    {
-                        _logger.LogError(result.Error);
-                        CancellationTokenSource source = new CancellationTokenSource();
-                        stoppingToken = source.Token;
-                        source.Cancel();
-                    }
-                    await Task.Delay(1000, stoppingToken);
+                    _logger.LogInformation($"count = {movingVehicleInfos.Count}, elapsed = {sw.ElapsedMilliseconds}");
+
+                    await Task.Delay(3000, stoppingToken);
                 }
             }
 

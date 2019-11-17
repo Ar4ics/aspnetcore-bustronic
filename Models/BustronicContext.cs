@@ -634,6 +634,11 @@ namespace AspNetCoreBustronic.Models
 
                 entity.Property(e => e.VehicleId).HasColumnName("vehicle_id");
 
+                entity.HasOne(d => d.Route)
+                    .WithMany(p => p.MovingVehicles)
+                    .HasForeignKey(d => d.RouteId)
+                    .HasConstraintName("moving_vehicles_routes_id_fk");
+
                 entity.HasOne(d => d.RouteSegment)
                     .WithMany(p => p.MovingVehicles)
                     .HasForeignKey(d => d.RouteSegmentId)

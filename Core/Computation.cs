@@ -13,94 +13,65 @@ namespace AspNetCoreBustronic.Controllers
     public class Computation
     {
         private MovingData _movingData;
+        private DateTime _prevTime = DateTime.Now;
+        private DateTime _nextTime = DateTime.Now;
+        private int _relevance = 5;
+
         public Computation(MovingData movingData)
         {
             _movingData = movingData;
         }
 
-        public Result<List<MovingVehicles>> compute(List<MovingVehicles> movingVehicles)
+        public List<MovingVehicleInfo> compute(List<MovingVehicleInfo> movingVehicleInfos)
         {
-            try
-            {
-                var result = predictAll(movingVehicles);
-                Debug.Assert(result.Count == movingVehicles.Count);
-                return Result.Success(result);
-            }
-            catch (Exception e)
-            {
-                return Result.Failure<List<MovingVehicles>>(e.Message);
-            }
-
+            var result = predictAll(movingVehicleInfos);
+            return result.Where(result => result.IsSuccess).Select(r => r.Value).ToList();
         }
 
-        private List<MovingVehicles> predictAll(List<MovingVehicles> movingVehicles, int countMilliseconds = 5)
+        private List<Result<MovingVehicleInfo>> predictAll(List<MovingVehicleInfo> movingVehicleInfos)
         {
-            var prevTime = DateTime.Now;
-            var nextTime = prevTime + TimeSpan.FromSeconds(countMilliseconds);
-            var res = new List<MovingVehicles>();
-            foreach (var mv in movingVehicles)
+            _prevTime = _nextTime;
+            _nextTime = DateTime.Now;
+            var res = new List<Result<MovingVehicleInfo>>();
+            foreach (var item in movingVehicleInfos)
             {
-                var r = predictLocation(mv, prevTime, nextTime);
+                var r = predictLocation(item);
                 res.Add(r);
             }
             return res;
         }
-        private MovingVehicles predictLocation(
-            MovingVehicles mv,
-            DateTime prevTime,
-            DateTime nextTime,
-            int relevance = 5
-            )
+        private Result<MovingVehicleInfo> predictLocation(MovingVehicleInfo mvi)
         {
-            var routeSegmentId = mv.RouteSegmentId ?? throw new Exception();
-            var confirmedAt = mv.ConfirmedAt ?? throw new Exception();
-            var distanceFromLastPath = mv.DistanceFromLastPath ?? throw new Exception();
-            var lastPathPosition = mv.LastPathPosition ?? throw new Exception();
-
-            var routeId = mv.RouteId;
-            var rss = _movingData.routeSegmentSpeeds[routeSegmentId];
-
-            var averageSpeed = rss.Where(e =>
+            var timeInterval = _movingData.GetTimeInterval(_nextTime);
+            if (timeInterval == null)
             {
-                var timeIntervalId = e.TimeIntervalId;
-                var timeInterval = _movingData.timeIntervals[timeIntervalId];
-                return nextTime.TimeOfDay >= timeInterval.TimeStart.TimeOfDay
-                && nextTime.TimeOfDay <= timeInterval.TimeEnd.TimeOfDay;
-            }).First().AverageSpeed;
-            mv.AverageSpeed = Convert.ToInt32(averageSpeed);
-            var diff = Convert.ToInt32((nextTime - confirmedAt).TotalMilliseconds);
-            mv.Relevance = Convert.ToInt32(100 * (1.0 - diff / (relevance * 60 * 1000)));
-            mv.UpdatedAt = nextTime;
-
-            var routeSegments = _movingData.routeSegments[routeId];
-            var firstRouteSegmentIndex = routeSegments.FindIndex(e =>
+                return Result.Failure<MovingVehicleInfo>("timeInterval not found");
+            }
+            RouteSegmentSpeeds routeSegmentSpeed;
+            if (!mvi.RouteSegmentSpeeds.TryGetValue(timeInterval.Id, out routeSegmentSpeed))
             {
-                return e.Id == routeSegmentId;
-            });
-            if (firstRouteSegmentIndex == -1) throw new Exception();
+                return Result.Failure<MovingVehicleInfo>("routeSegmentSpeed not found");
+            }
+            mvi.MovingVehicle.AverageSpeed = Convert.ToInt32(routeSegmentSpeed.AverageSpeed);
+            var diff = Convert.ToInt32((_nextTime - mvi.MovingVehicle.ConfirmedAt.Value).TotalMilliseconds);
+            mvi.MovingVehicle.Relevance = Convert.ToInt32(100 * (1.0 - diff / (_relevance * 60 * 1000)));
+            mvi.MovingVehicle.UpdatedAt = _nextTime;
 
-            var paths = _movingData.routeSegmentPaths[routeSegmentId];
-            var lastPathIndex = paths.FindIndex(e =>
-            {
-                return e.Position == lastPathPosition;
-            });
-            if (lastPathIndex == -1) throw new Exception();
-
-            var deltaTime = Convert.ToInt32((nextTime - prevTime).TotalMilliseconds);
-            var theoreticDistance = averageSpeed * deltaTime / 3600;
+            var deltaTime = Convert.ToInt32((_nextTime - _prevTime).TotalMilliseconds);
+            var theoreticDistance = ((double)(mvi.MovingVehicle.AverageSpeed.Value)) * deltaTime / 3600;
             if (theoreticDistance <= 0)
             {
-                throw new Exception();
+                return Result.Failure<MovingVehicleInfo>("theoreticDistance <= 0");
             }
 
             var nextRouteSegmentIndex = 0;
-            var distanceToEndOfLastPath = paths[lastPathIndex].Distance - distanceFromLastPath;
+            var distanceToEndOfLastPath = mvi.RouteSegmentPaths[mvi.LastPathIndex].Distance - mvi.MovingVehicle.DistanceFromLastPath.Value;
             var distanceToEndOfFirstSegment = distanceToEndOfLastPath;
             var pathToEndOfFirstSegment = new List<RouteSegmentPaths>();
-            for (var i = lastPathIndex + 1; i < paths.Count; i++)
+            for (var i = mvi.LastPathIndex + 1; i < mvi.RouteSegmentPaths.Count; i++)
             {
-                distanceToEndOfFirstSegment += paths[i].Distance;
-                pathToEndOfFirstSegment.Add(paths[i]);
+                distanceToEndOfFirstSegment += mvi.RouteSegmentPaths[i].Distance;
+                pathToEndOfFirstSegment.Add(mvi.RouteSegmentPaths[i]);
             }
 
             if (theoreticDistance > distanceToEndOfFirstSegment)
@@ -109,11 +80,11 @@ namespace AspNetCoreBustronic.Controllers
                 var nextTheoreticDistance = theoreticDistance - distanceToEndOfFirstSegment;
                 while (true)
                 {
-                    var nextRouteSegment = (firstRouteSegmentIndex + nextRouteSegmentIndex >= routeSegments.Count())
-                    ? routeSegments[0]
-                    : routeSegments[firstRouteSegmentIndex + nextRouteSegmentIndex];
+                    var i = (mvi.FirstRouteSegmentIndex + nextRouteSegmentIndex >= mvi.RouteSegments.Count()) ? 0
+                        : mvi.FirstRouteSegmentIndex + nextRouteSegmentIndex;
+                    var nextRouteSegment = mvi.RouteSegments[i];
 
-                    var distanceBetweenTwoSegments = nextRouteSegment.Distance ?? throw new Exception();
+                    var distanceBetweenTwoSegments = nextRouteSegment.Distance.Value;
 
                     if (Math.Round(nextTheoreticDistance - distanceBetweenTwoSegments) > 0)
                     {
@@ -122,8 +93,12 @@ namespace AspNetCoreBustronic.Controllers
                     }
                     else
                     {
-                        var nextPath = _movingData.routeSegmentPaths[nextRouteSegment.Id];
-                        return getLocationOnPath(mv, nextPath, nextTheoreticDistance, nextRouteSegment);
+                        List<RouteSegmentPaths> nextPath;
+                        if (!_movingData.RouteSegmentPaths.TryGetValue(nextRouteSegment.Id, out nextPath))
+                        {
+                            return Result.Failure<MovingVehicleInfo>("nextPath not found");
+                        }
+                        return getLocationOnPath(mvi, nextPath, nextTheoreticDistance, nextRouteSegment);
                     }
                 }
             }
@@ -131,35 +106,36 @@ namespace AspNetCoreBustronic.Controllers
             {
                 if (theoreticDistance <= distanceToEndOfLastPath)
                 {
-                    if ((mv.DistanceFromLastPath + theoreticDistance) > paths[lastPathIndex].Distance)
+                    if ((mvi.MovingVehicle.DistanceFromLastPath.Value + theoreticDistance)
+                        > mvi.RouteSegmentPaths[mvi.LastPathIndex].Distance)
                     {
-                        throw new Exception();
+                        return Result.Failure<MovingVehicleInfo>("DistanceFromLastPath > LastPathIndex.Distance");
                     }
                     else
                     {
                         return calculateLocationOnPath(
-                            mv,
-                            paths[lastPathIndex],
-                            distanceFromLastPath + theoreticDistance,
-                            routeSegments[firstRouteSegmentIndex]
+                            mvi,
+                            mvi.RouteSegmentPaths[mvi.LastPathIndex],
+                            mvi.MovingVehicle.DistanceFromLastPath.Value + theoreticDistance,
+                            mvi.RouteSegments[mvi.FirstRouteSegmentIndex]
                         );
                     }
                 }
                 else
                 {
                     return getLocationOnPath(
-                        mv,
+                        mvi,
                         pathToEndOfFirstSegment,
                         theoreticDistance - distanceToEndOfLastPath,
-                        routeSegments[firstRouteSegmentIndex]
+                        mvi.RouteSegments[mvi.FirstRouteSegmentIndex]
                     );
                 }
             }
 
         }
 
-        private MovingVehicles getLocationOnPath(
-            MovingVehicles mv,
+        private Result<MovingVehicleInfo> getLocationOnPath(
+            MovingVehicleInfo mvi,
             List<RouteSegmentPaths> path,
             double distance,
             RouteSegments routeSegment
@@ -179,22 +155,22 @@ namespace AspNetCoreBustronic.Controllers
                     var fraction = nextDistance / currentDistance;
                     if (fraction < 0.0 || fraction > 1.0)
                     {
-                        throw new Exception();
+                        return Result.Failure<MovingVehicleInfo>("fraction < 0.0 || fraction > 1.0");
                     }
                     if (nextDistance < 0 && nextDistance > currentDistance)
                     {
-                        throw new Exception();
+                        return Result.Failure<MovingVehicleInfo>("nextDistance < 0 && nextDistance > currentDistance");
                     }
-                    return calculateLocationOnPath(mv, path[i], nextDistance, routeSegment);
+                    return calculateLocationOnPath(mvi, path[i], nextDistance, routeSegment);
                 }
             }
-            return calculateLocationOnPath(mv, path[path.Count() - 1], 1.0, routeSegment);
+            return calculateLocationOnPath(mvi, path[path.Count() - 1], 1.0, routeSegment);
         }
 
         private double pi = Math.PI;
 
-        private MovingVehicles calculateLocationOnPath(
-            MovingVehicles mv,
+        private Result<MovingVehicleInfo> calculateLocationOnPath(
+            MovingVehicleInfo mvi,
             RouteSegmentPaths path,
             double distance,
             RouteSegments routeSegment
@@ -215,11 +191,11 @@ namespace AspNetCoreBustronic.Controllers
                         Math.Tan(lat2) * Math.Sin(lng - lng1)) / Math.Sin(lng2 - lng1)
             );
             var normalized = new Point(lng * 180 / pi, lat * 180 / pi);
-            mv.Normalized = normalized;
-            mv.RouteSegmentId = routeSegment.Id;
-            mv.LastPathPosition = path.Position;
-            mv.DistanceFromLastPath = distance;
-            return mv;
+            mvi.MovingVehicle.Normalized = normalized;
+            mvi.MovingVehicle.RouteSegmentId = routeSegment.Id;
+            mvi.MovingVehicle.LastPathPosition = path.Position;
+            mvi.MovingVehicle.DistanceFromLastPath = distance;
+            return Result.Success(mvi);
         }
 
     }

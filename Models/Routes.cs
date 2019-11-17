@@ -12,6 +12,7 @@ namespace AspNetCoreBustronic.Models
             CompetitorsRoute = new HashSet<Competitors>();
             DriverCompetitors = new HashSet<DriverCompetitors>();
             DriverRoutes = new HashSet<DriverRoutes>();
+            MovingVehicles = new HashSet<MovingVehicles>();
             OwnerRoutes = new HashSet<OwnerRoutes>();
             RouteSegments = new HashSet<RouteSegments>();
             RouteStations = new HashSet<RouteStations>();
@@ -38,6 +39,7 @@ namespace AspNetCoreBustronic.Models
         public virtual ICollection<Competitors> CompetitorsRoute { get; set; }
         public virtual ICollection<DriverCompetitors> DriverCompetitors { get; set; }
         public virtual ICollection<DriverRoutes> DriverRoutes { get; set; }
+        public virtual ICollection<MovingVehicles> MovingVehicles { get; set; }
         public virtual ICollection<OwnerRoutes> OwnerRoutes { get; set; }
         public virtual ICollection<RouteSegments> RouteSegments { get; set; }
         public virtual ICollection<RouteStations> RouteStations { get; set; }

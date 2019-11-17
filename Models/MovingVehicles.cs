@@ -26,6 +26,7 @@ namespace AspNetCoreBustronic.Models
         public int? Relevance { get; set; }
         public DateTime? ConfirmedAt { get; set; }
 
+        public virtual Routes Route { get; set; }
         public virtual RouteSegments RouteSegment { get; set; }
         public virtual Vehicles Vehicle { get; set; }
     }
