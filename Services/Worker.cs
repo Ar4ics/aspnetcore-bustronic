@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using AspNetCoreBustronic.Controllers;
@@ -12,12 +13,15 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using StackExchange.Redis;
 
 namespace AspNetCoreBustronic.Services
 {
     public class Worker : BackgroundService
     {
         readonly ILogger<Worker> _logger;
+        private ConnectionMultiplexer connection;
+
         public IServiceProvider _provider { get; }
 
         public Worker(IServiceProvider provider, ILogger<Worker> logger)
@@ -31,6 +35,9 @@ namespace AspNetCoreBustronic.Services
             _logger.LogInformation(
                 "Consume Scoped Service Hosted Service running.");
 
+            var configuration = ConfigurationOptions.Parse("localhost:6379");
+            connection = ConnectionMultiplexer.Connect(configuration);
+
             await DoWork(stoppingToken);
         }
 
@@ -43,9 +50,9 @@ namespace AspNetCoreBustronic.Services
             {
                 var context = scope.ServiceProvider.GetRequiredService<BustronicContext>();
                 var movingData = MovingData.Create(context);
-                var movingVehicleInfos = MovingVehicleInfo.Create(movingData);
+                var movingVehicleInfos = MovingVehicleInfo.Create(movingData.MovingVehicles);
                 var computation = new Computation(movingData);
-
+                var publisher = connection.GetSubscriber();
                 while (!stoppingToken.IsCancellationRequested)
                 {
                     _logger.LogInformation("Worker running at: {time}", DateTimeOffset.Now);
@@ -54,7 +61,13 @@ namespace AspNetCoreBustronic.Services
                     sw.Stop();
                     _logger.LogInformation($"count = {movingVehicleInfos.Count}, elapsed = {sw.ElapsedMilliseconds}");
 
-                    await Task.Delay(3000, stoppingToken);
+                    var toClient = JsonSerializer.Serialize(new { 
+                        @event = "message", 
+                        data = movingVehicleInfos.Select(e => e.ToClient())
+                    });
+                    publisher.Publish("channels", toClient);
+
+                    await Task.Delay(100, stoppingToken);
                 }
             }
 
@@ -65,6 +78,8 @@ namespace AspNetCoreBustronic.Services
             _logger.LogInformation(
                 "Consume Scoped Service Hosted Service is stopping.");
 
+            if (connection != null)
+                connection.Close();
             await Task.CompletedTask;
         }
     }

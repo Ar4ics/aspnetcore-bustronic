@@ -13,8 +13,8 @@ namespace AspNetCoreBustronic.Controllers
     public class Computation
     {
         private MovingData _movingData;
-        private DateTime _prevTime = DateTime.Now;
-        private DateTime _nextTime = DateTime.Now;
+        private DateTime _prevTime = DateTime.UtcNow;
+        private DateTime _nextTime = DateTime.UtcNow;
         private int _relevance = 5;
 
         public Computation(MovingData movingData)
@@ -22,26 +22,76 @@ namespace AspNetCoreBustronic.Controllers
             _movingData = movingData;
         }
 
-        public List<MovingVehicleInfo> compute(List<MovingVehicleInfo> movingVehicleInfos)
+
+        private Result<MovingVehicleInfo> SelectValid(MovingVehicleInfo movingVehicleInfo)
         {
-            var result = predictAll(movingVehicleInfos);
-            return result.Where(result => result.IsSuccess).Select(r => r.Value).ToList();
+            if (
+                !movingVehicleInfo.MovingVehicle.RouteSegmentId.HasValue ||
+                !movingVehicleInfo.MovingVehicle.ConfirmedAt.HasValue ||
+                !movingVehicleInfo.MovingVehicle.LastPathPosition.HasValue ||
+                !movingVehicleInfo.MovingVehicle.DistanceFromLastPath.HasValue)
+            {
+                return IsInvalid();
+            }
+            List<RouteSegmentPaths> routeSegmentPaths;
+            if (!_movingData.RouteSegmentPaths.TryGetValue(movingVehicleInfo.MovingVehicle.RouteSegmentId.Value, out routeSegmentPaths))
+            {
+                return IsInvalid();
+            }
+
+            Dictionary<int, RouteSegmentSpeeds> routeSegmentSpeeds;
+            if (!_movingData.RouteSegmentSpeeds.TryGetValue(movingVehicleInfo.MovingVehicle.RouteSegmentId.Value, out routeSegmentSpeeds))
+            {
+                return IsInvalid();
+            }
+
+            var firstRouteSegmentIndex = movingVehicleInfo.RouteSegments.FindIndex(e =>
+            {
+                return e.Id == movingVehicleInfo.MovingVehicle.RouteSegmentId.Value;
+            });
+            if (firstRouteSegmentIndex == -1)
+            {
+                return IsInvalid();
+            }
+
+            var lastPathIndex = routeSegmentPaths.FindIndex(e =>
+            {
+                return e.Position == movingVehicleInfo.MovingVehicle.LastPathPosition.Value;
+            });
+            if (lastPathIndex == -1)
+            {
+                return IsInvalid();
+            }
+            movingVehicleInfo.RouteSegmentPaths = routeSegmentPaths;
+            movingVehicleInfo.RouteSegmentSpeeds = routeSegmentSpeeds;
+            movingVehicleInfo.FirstRouteSegmentIndex = firstRouteSegmentIndex;
+            movingVehicleInfo.LastPathIndex = lastPathIndex;
+
+            return Result.Success(movingVehicleInfo);
         }
 
-        private List<Result<MovingVehicleInfo>> predictAll(List<MovingVehicleInfo> movingVehicleInfos)
+        private Result<MovingVehicleInfo> IsInvalid()
+        {
+            return Result.Failure<MovingVehicleInfo>("MovingVehicle is invalid");
+        }
+
+        public List<MovingVehicleInfo> compute(List<MovingVehicleInfo> movingVehicleInfos)
         {
             _prevTime = _nextTime;
-            _nextTime = DateTime.Now;
-            var res = new List<Result<MovingVehicleInfo>>();
-            foreach (var item in movingVehicleInfos)
-            {
-                var r = predictLocation(item);
-                res.Add(r);
-            }
-            return res;
+            _nextTime = DateTime.UtcNow;
+            return movingVehicleInfos.AsParallel()
+                .Select(e => SelectValid(e)).Where(result => result.IsSuccess).Select(r => r.Value)
+                .Select(e => PredictLocation(e)).Where(result => result.IsSuccess).Select(r => r.Value).ToList();
         }
-        private Result<MovingVehicleInfo> predictLocation(MovingVehicleInfo mvi)
+
+        private Result<MovingVehicleInfo> PredictLocation(MovingVehicleInfo mvi)
         {
+            var diff = Convert.ToInt32((_nextTime - mvi.MovingVehicle.ConfirmedAt.Value).TotalMilliseconds);
+            var relevance = Convert.ToInt32(100 * (1.0 - diff / (_relevance * 60 * 1000)));
+            if (relevance <= 0) {
+                return Result.Failure<MovingVehicleInfo>("relevance <= 0");
+            }
+            mvi.MovingVehicle.Relevance = relevance;
             var timeInterval = _movingData.GetTimeInterval(_nextTime);
             if (timeInterval == null)
             {
@@ -53,9 +103,6 @@ namespace AspNetCoreBustronic.Controllers
                 return Result.Failure<MovingVehicleInfo>("routeSegmentSpeed not found");
             }
             mvi.MovingVehicle.AverageSpeed = Convert.ToInt32(routeSegmentSpeed.AverageSpeed);
-            var diff = Convert.ToInt32((_nextTime - mvi.MovingVehicle.ConfirmedAt.Value).TotalMilliseconds);
-            mvi.MovingVehicle.Relevance = Convert.ToInt32(100 * (1.0 - diff / (_relevance * 60 * 1000)));
-            mvi.MovingVehicle.UpdatedAt = _nextTime;
 
             var deltaTime = Convert.ToInt32((_nextTime - _prevTime).TotalMilliseconds);
             var theoreticDistance = ((double)(mvi.MovingVehicle.AverageSpeed.Value)) * deltaTime / 3600;
@@ -98,7 +145,7 @@ namespace AspNetCoreBustronic.Controllers
                         {
                             return Result.Failure<MovingVehicleInfo>("nextPath not found");
                         }
-                        return getLocationOnPath(mvi, nextPath, nextTheoreticDistance, nextRouteSegment);
+                        return GetLocationOnPath(mvi, nextPath, nextTheoreticDistance, nextRouteSegment);
                     }
                 }
             }
@@ -113,7 +160,7 @@ namespace AspNetCoreBustronic.Controllers
                     }
                     else
                     {
-                        return calculateLocationOnPath(
+                        return CalculateLocationOnPath(
                             mvi,
                             mvi.RouteSegmentPaths[mvi.LastPathIndex],
                             mvi.MovingVehicle.DistanceFromLastPath.Value + theoreticDistance,
@@ -123,7 +170,7 @@ namespace AspNetCoreBustronic.Controllers
                 }
                 else
                 {
-                    return getLocationOnPath(
+                    return GetLocationOnPath(
                         mvi,
                         pathToEndOfFirstSegment,
                         theoreticDistance - distanceToEndOfLastPath,
@@ -134,7 +181,7 @@ namespace AspNetCoreBustronic.Controllers
 
         }
 
-        private Result<MovingVehicleInfo> getLocationOnPath(
+        private Result<MovingVehicleInfo> GetLocationOnPath(
             MovingVehicleInfo mvi,
             List<RouteSegmentPaths> path,
             double distance,
@@ -161,15 +208,15 @@ namespace AspNetCoreBustronic.Controllers
                     {
                         return Result.Failure<MovingVehicleInfo>("nextDistance < 0 && nextDistance > currentDistance");
                     }
-                    return calculateLocationOnPath(mvi, path[i], nextDistance, routeSegment);
+                    return CalculateLocationOnPath(mvi, path[i], nextDistance, routeSegment);
                 }
             }
-            return calculateLocationOnPath(mvi, path[path.Count() - 1], 1.0, routeSegment);
+            return CalculateLocationOnPath(mvi, path[path.Count() - 1], 1.0, routeSegment);
         }
 
         private double pi = Math.PI;
 
-        private Result<MovingVehicleInfo> calculateLocationOnPath(
+        private Result<MovingVehicleInfo> CalculateLocationOnPath(
             MovingVehicleInfo mvi,
             RouteSegmentPaths path,
             double distance,
@@ -195,6 +242,7 @@ namespace AspNetCoreBustronic.Controllers
             mvi.MovingVehicle.RouteSegmentId = routeSegment.Id;
             mvi.MovingVehicle.LastPathPosition = path.Position;
             mvi.MovingVehicle.DistanceFromLastPath = distance;
+            mvi.MovingVehicle.UpdatedAt = _nextTime;
             return Result.Success(mvi);
         }
 
