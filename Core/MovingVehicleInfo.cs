@@ -9,21 +9,38 @@ namespace AspNetCoreBustronic.Core
     public class MovingVehicleInfo
     {
         public MovingVehicles MovingVehicle { get; private set; }
+        public Routes Route { get; private set; }
         public List<RouteSegments> RouteSegments { get; private set; }
         public int FirstRouteSegmentIndex { get; set; }
         public List<RouteSegmentPaths> RouteSegmentPaths { get; set; }
         public int LastPathIndex { get; set; }
         public Dictionary<int, RouteSegmentSpeeds> RouteSegmentSpeeds { get; set; }
+        public string Error { get; set; } = String.Empty;
 
-        public static List<MovingVehicleInfo> Create(List<MovingVehicles> movingVehicles)
+        public static List<MovingVehicleInfo> Create(MovingData movingData)
         {
             var list = new List<MovingVehicleInfo>();
-            foreach (var item in movingVehicles)
+            foreach (var item in movingData.GetMovingVehicles())
             {
+                if (
+                    !item.RouteSegmentId.HasValue ||
+                    !item.ConfirmedAt.HasValue ||
+                    !item.LastPathPosition.HasValue ||
+                    !item.DistanceFromLastPath.HasValue)
+                {
+                    continue;
+                }
+                var route = movingData.Routes.Find(e => e.Id == item.RouteId);
+                if (route == null)
+                {
+                    continue;
+                }
+                List<RouteSegments> routeSegments = route.RouteSegments.ToList();
                 list.Add(new MovingVehicleInfo()
                 {
                     MovingVehicle = item,
-                    RouteSegments = item.Route.RouteSegments.ToList(),
+                    Route = route,
+                    RouteSegments = routeSegments,
                 });
 
             }

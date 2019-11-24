@@ -2,8 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
-using Microsoft.AspNetCore.Hosting;
+using AspNetCoreBustronic.Models;
+using AspNetCoreBustronic.Services;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -18,9 +21,13 @@ namespace AspNetCoreBustronic
 
         public static IHostBuilder CreateHostBuilder(string[] args) =>
             Host.CreateDefaultBuilder(args)
-                .ConfigureWebHostDefaults(webBuilder =>
+                .UseSystemd()
+                .ConfigureServices((hostBuilderContext, services) =>
                 {
-                    webBuilder.UseStartup<Startup>();
+                    var cs = hostBuilderContext.Configuration.GetConnectionString("Postgres");
+                    services.AddHostedService<Worker>();
+                    services.AddDbContext<BustronicContext>(options =>
+                        options.UseNpgsql(cs, o => o.UseNetTopologySuite()));
                 });
     }
 }

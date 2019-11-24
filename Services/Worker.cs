@@ -13,6 +13,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Npgsql;
 using StackExchange.Redis;
 
 namespace AspNetCoreBustronic.Services
@@ -41,6 +42,11 @@ namespace AspNetCoreBustronic.Services
             await DoWork(stoppingToken);
         }
 
+        private void OnNotification(object sender, NpgsqlNotificationEventArgs e)
+        {
+            throw new Exception();
+        }
+
         private async Task DoWork(CancellationToken stoppingToken)
         {
             _logger.LogInformation(
@@ -50,24 +56,41 @@ namespace AspNetCoreBustronic.Services
             {
                 var context = scope.ServiceProvider.GetRequiredService<BustronicContext>();
                 var movingData = MovingData.Create(context);
-                var movingVehicleInfos = MovingVehicleInfo.Create(movingData.MovingVehicles);
+                var movingVehicleInfos = MovingVehicleInfo.Create(movingData);
                 var computation = new Computation(movingData);
                 var publisher = connection.GetSubscriber();
+
+                publisher.Subscribe("message", (channel, message) =>
+                {
+                    _logger.LogWarning($"channel: {channel}, message: {message}");
+                });
+
                 while (!stoppingToken.IsCancellationRequested)
                 {
                     _logger.LogInformation("Worker running at: {time}", DateTimeOffset.Now);
                     var sw = Stopwatch.StartNew();
-                    movingVehicleInfos = computation.compute(movingVehicleInfos);
+                    var result = computation.compute(movingVehicleInfos);
                     sw.Stop();
                     _logger.LogInformation($"count = {movingVehicleInfos.Count}, elapsed = {sw.ElapsedMilliseconds}");
 
-                    var toClient = JsonSerializer.Serialize(new { 
-                        @event = "message", 
+                    movingVehicleInfos = result.Where(e => e.Error.Equals(String.Empty)).ToList();
+                    //movingData.Update(movingVehicleInfos);
+                    var toClient = JsonSerializer.Serialize(new
+                    {
+                        @event = "message",
                         data = movingVehicleInfos.Select(e => e.ToClient())
                     });
                     publisher.Publish("channels", toClient);
 
-                    await Task.Delay(100, stoppingToken);
+                    var invalid = result.Where(e => !e.Error.Equals(String.Empty)).ToList();
+                    if (invalid.Count > 0)
+                    {
+                        movingData.Remove(invalid);
+                        movingData.Insert(invalid);
+                        movingVehicleInfos = MovingVehicleInfo.Create(movingData);
+                    }
+
+                    await Task.Delay(1000, stoppingToken);
                 }
             }
 
@@ -79,7 +102,9 @@ namespace AspNetCoreBustronic.Services
                 "Consume Scoped Service Hosted Service is stopping.");
 
             if (connection != null)
+            {
                 connection.Close();
+            }
             await Task.CompletedTask;
         }
     }
